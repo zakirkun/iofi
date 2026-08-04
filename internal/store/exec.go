@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -19,17 +21,38 @@ func (s *Store) GetRun(ctx context.Context, id string) (*Run, error) {
 	return selectOne[Run](ctx, s, `SELECT `+runCols+` FROM runs WHERE id=$1`, id)
 }
 
-func (s *Store) ListRuns(ctx context.Context, agentID string, limit int) ([]Run, error) {
-	if limit <= 0 {
-		limit = 50
+type RunFilter struct {
+	AgentID string
+	TaskID  string
+	State   string // queued | running | done | failed | cancelled
+	Limit   int
+}
+
+func (s *Store) ListRuns(ctx context.Context, f RunFilter) ([]Run, error) {
+	var where []string
+	var args []any
+	add := func(col string, v any) {
+		args = append(args, v)
+		where = append(where, fmt.Sprintf("%s=$%d", col, len(args)))
 	}
-	if agentID == "" {
-		return selectAll[Run](ctx, s,
-			`SELECT `+runCols+` FROM runs ORDER BY created_at DESC LIMIT $1`, limit)
+	if f.AgentID != "" {
+		add("agent_id", f.AgentID)
 	}
-	return selectAll[Run](ctx, s,
-		`SELECT `+runCols+` FROM runs WHERE agent_id=$1 ORDER BY created_at DESC LIMIT $2`,
-		agentID, limit)
+	if f.TaskID != "" {
+		add("task_id", f.TaskID)
+	}
+	if f.State != "" {
+		add("state", f.State)
+	}
+	sql := `SELECT ` + runCols + ` FROM runs`
+	if len(where) > 0 {
+		sql += " WHERE " + strings.Join(where, " AND ")
+	}
+	if f.Limit <= 0 {
+		f.Limit = 50
+	}
+	args = append(args, f.Limit)
+	return selectAll[Run](ctx, s, sql+fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args)), args...)
 }
 
 func (s *Store) StartRun(ctx context.Context, id, command string) error {
@@ -66,6 +89,19 @@ func (s *Store) ListRunEvents(ctx context.Context, runID string, sinceSeq int) (
 	return selectAll[RunEvent](ctx, s,
 		`SELECT id, run_id, seq, kind, payload, at FROM run_events
 		 WHERE run_id=$1 AND seq>$2 ORDER BY seq`, runID, sinceSeq)
+}
+
+// TailRunEvents returns the last n events in chronological order. Diagnosing a
+// failed run means reading its end, and a long run's beginning is noise.
+func (s *Store) TailRunEvents(ctx context.Context, runID string, n int) ([]RunEvent, error) {
+	if n <= 0 {
+		n = 30
+	}
+	return selectAll[RunEvent](ctx, s, `
+		SELECT id, run_id, seq, kind, payload, at FROM (
+			SELECT id, run_id, seq, kind, payload, at FROM run_events
+			WHERE run_id=$1 ORDER BY seq DESC LIMIT $2
+		) t ORDER BY seq`, runID, n)
 }
 
 // CostLine is one row of the finance report.

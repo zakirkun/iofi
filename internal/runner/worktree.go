@@ -83,6 +83,65 @@ func (g *Git) Status(ctx context.Context, path string) (string, error) {
 	return g.run(ctx, path, "status", "--short", "--branch")
 }
 
+// maxDiffBytes caps what a tool hands back to a model. A diff of a vendored
+// directory is megabytes, and pasting it costs the run its whole context
+// window before the agent has read a line of it.
+const maxDiffBytes = 60 << 10
+
+// Diff shows the branch against its base plus anything not yet committed.
+// A reviewer that sees only committed work misses the change still sitting in
+// the working tree, which is exactly where a half-finished task lives.
+func (g *Git) Diff(ctx context.Context, path, base string, summary bool) (string, error) {
+	args := []string{"diff", "origin/" + base + "...HEAD"}
+	if summary {
+		args = append(args, "--stat")
+	}
+	committed, err := g.run(ctx, path, args...)
+	if err != nil {
+		return "", fmt.Errorf("diff against origin/%s: %w: %s", base, err, committed)
+	}
+	working, _ := g.run(ctx, path, append([]string{"diff", "HEAD"}, args[2:]...)...)
+
+	var b strings.Builder
+	b.WriteString("# committed on this branch vs origin/" + base + "\n")
+	b.WriteString(orPlaceholder(committed, "(no commits yet)"))
+	if strings.TrimSpace(working) != "" {
+		b.WriteString("\n# uncommitted in the working tree\n")
+		b.WriteString(working)
+	}
+	return capDiff(b.String(), maxDiffBytes), nil
+}
+
+func (g *Git) Log(ctx context.Context, path, base string, limit int) (string, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	out, err := g.run(ctx, path, "log", "--no-merges", "--format=%h %an: %s",
+		fmt.Sprintf("-%d", limit), "origin/"+base+"..HEAD")
+	if err != nil {
+		return "", fmt.Errorf("log against origin/%s: %w: %s", base, err, out)
+	}
+	return orPlaceholder(out, "(no commits on this branch yet)"), nil
+}
+
+func orPlaceholder(s, placeholder string) string {
+	if strings.TrimSpace(s) == "" {
+		return placeholder + "\n"
+	}
+	return s
+}
+
+// capDiff truncates with a note telling the reader how to get the rest. The
+// plain truncate in adapter.go ends with "..." , which in a diff reads as part
+// of the patch rather than as a warning that the patch is incomplete.
+func capDiff(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + fmt.Sprintf("\n\n… truncated at %d bytes. Narrow it down with repo_diff "+
+		"summary=true, then read the files you care about directly.", max)
+}
+
 func (g *Git) HasCommits(ctx context.Context, path, base string) (bool, error) {
 	out, err := g.run(ctx, path, "rev-list", "--count", "origin/"+base+"..HEAD")
 	if err != nil {

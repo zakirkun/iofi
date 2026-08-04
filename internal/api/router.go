@@ -11,7 +11,9 @@ import (
 
 	"iofi/internal/brain"
 	"iofi/internal/bus"
+	"iofi/internal/docling"
 	"iofi/internal/github"
+	"iofi/internal/knowledge"
 	"iofi/internal/mcpsrv"
 	"iofi/internal/meeting"
 	"iofi/internal/runner"
@@ -19,14 +21,16 @@ import (
 )
 
 type Server struct {
-	Store   *store.Store
-	Brain   *brain.Client
-	Bus     *bus.Bus
-	Runner  *runner.Runner
-	Meeting *meeting.Engine
-	MCP     *mcpsrv.Service
-	GitHub  *github.Sync
-	WebFS   fs.FS // built frontend, embedded
+	Store     *store.Store
+	Brain     *brain.Client
+	Bus       *bus.Bus
+	Runner    *runner.Runner
+	Meeting   *meeting.Engine
+	MCP       *mcpsrv.Service
+	GitHub    *github.Sync
+	Knowledge *knowledge.Service
+	Docling   *docling.Client
+	WebFS     fs.FS // built frontend, embedded
 
 	AuthToken       string
 	RateLimitPerMin int
@@ -73,6 +77,7 @@ func (s *Server) Routes() http.Handler {
 
 		r.Route("/tools", func(r chi.Router) {
 			r.Get("/", s.listTools)
+			r.Get("/catalog", s.toolCatalog) // MCP tools grantable to a role
 			r.Put("/{id}", s.updateTool)
 		})
 
@@ -108,6 +113,16 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/", s.createMemory)
 			r.Post("/search", s.searchMemories)
 			r.Delete("/{id}", s.deleteMemory)
+		})
+
+		r.Route("/knowledge", func(r chi.Router) {
+			r.Get("/", s.listDocs)
+			r.Post("/", s.uploadDoc) // multipart; extraction continues in the background
+			r.Post("/search", s.searchKnowledge)
+			r.Get("/{id}", s.getDoc)
+			r.Get("/{id}/chunks", s.docChunks)
+			r.Post("/{id}/reprocess", s.reprocessDoc)
+			r.Delete("/{id}", s.deleteDoc)
 		})
 
 		r.Route("/meetings", func(r chi.Router) {

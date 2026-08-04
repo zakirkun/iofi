@@ -13,6 +13,7 @@ import (
 
 	"iofi/internal/skills"
 	"iofi/internal/store"
+	"iofi/internal/toolcat"
 )
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -58,7 +59,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	roles, _ := s.Store.ListRoles(ctx)
 	boards, _ := s.Store.ListBoards(ctx)
-	runs, _ := s.Store.ListRuns(ctx, "", 20)
+	runs, _ := s.Store.ListRuns(ctx, store.RunFilter{Limit: 20})
 	meetings, _ := s.Store.ListMeetings(ctx, true)
 
 	var tasks []store.Task
@@ -193,6 +194,17 @@ func (s *Server) healthDetail(ctx context.Context) map[string]any {
 			resp.Body.Close()
 		}
 	}
+	// "off" rather than "down": running without document conversion is a
+	// supported configuration, and reporting it as a fault would train the
+	// founder to ignore the indicator.
+	out["docling"] = "off"
+	if s.Docling != nil && s.Docling.Enabled() {
+		if err := s.Docling.Health(ctx); err != nil {
+			out["docling"] = err.Error()
+		} else {
+			out["docling"] = "up"
+		}
+	}
 	return out
 }
 
@@ -208,6 +220,16 @@ func (s *Server) deleteSkill(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
 	reply(w)(nil2empty(s.Store.ListTools(r.Context())))
+}
+
+// toolCatalog lists the MCP tools an agent can be granted. The role editor
+// needs it to offer checkboxes: a free-text tool_policy lets the founder
+// permit a tool that does not exist, which fails silently at run time.
+func (s *Server) toolCatalog(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tools":      toolcat.Catalog,
+		"categories": toolcat.ByCategory(),
+	})
 }
 
 func (s *Server) updateTool(w http.ResponseWriter, r *http.Request) {
@@ -550,7 +572,10 @@ func (s *Server) runMeeting(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	reply(w)(nil2empty(s.Store.ListRuns(r.Context(), r.URL.Query().Get("agent_id"), limit)))
+	q := r.URL.Query()
+	reply(w)(nil2empty(s.Store.ListRuns(r.Context(), store.RunFilter{
+		AgentID: q.Get("agent_id"), TaskID: q.Get("task_id"), State: q.Get("state"), Limit: limit,
+	})))
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {

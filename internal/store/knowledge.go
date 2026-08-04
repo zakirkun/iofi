@@ -110,6 +110,58 @@ func (s *Store) SearchMemories(ctx context.Context, q MemoryQuery) ([]Memory, er
 	return selectAll[Memory](ctx, s, sql, args...)
 }
 
+func (s *Store) GetMemory(ctx context.Context, id string) (*Memory, error) {
+	return selectOne[Memory](ctx, s, `SELECT `+memCols+` FROM memories WHERE id=$1`, id)
+}
+
+type MemoryPatch struct {
+	Title      *string
+	Body       *string
+	Kind       *string
+	Confidence *float32
+}
+
+// UpdateMemory rewrites a memory in place and re-embeds it when the text
+// changed. Leaving the old embedding behind would keep the memory findable by
+// the wording it no longer contains.
+func (s *Store) UpdateMemory(ctx context.Context, id string, p MemoryPatch, embedding []float32) (*Memory, error) {
+	var sets []string
+	args := []any{id}
+	set := func(col string, v any) {
+		args = append(args, v)
+		sets = append(sets, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+	if p.Title != nil {
+		set("title", *p.Title)
+	}
+	if p.Body != nil {
+		set("body", *p.Body)
+	}
+	if p.Kind != nil {
+		set("kind", *p.Kind)
+	}
+	if p.Confidence != nil {
+		set("confidence", *p.Confidence)
+	}
+	if len(embedding) > 0 {
+		args = append(args, VecLiteral(embedding))
+		sets = append(sets, fmt.Sprintf("embedding=$%d::vector", len(args)))
+	}
+	if len(sets) == 0 {
+		return s.GetMemory(ctx, id)
+	}
+	return selectOne[Memory](ctx, s,
+		`UPDATE memories SET `+strings.Join(sets, ", ")+` WHERE id=$1 RETURNING `+memCols, args...)
+}
+
+// ExpireMemory retires a memory without deleting it. Search already filters on
+// expires_at, so one timestamp removes it from every recall path while the row
+// stays available to anyone auditing what the company used to believe.
+func (s *Store) ExpireMemory(ctx context.Context, id string) (*Memory, error) {
+	return selectOne[Memory](ctx, s,
+		`UPDATE memories SET expires_at=now() WHERE id=$1 RETURNING `+memCols, id)
+}
+
 func (s *Store) ListMemories(ctx context.Context, limit int) ([]Memory, error) {
 	if limit <= 0 {
 		limit = 100

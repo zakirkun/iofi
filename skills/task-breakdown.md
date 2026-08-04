@@ -1,8 +1,8 @@
 ---
 slug: task-breakdown
-version: 1
+version: 2
 applies_to: [tech-leader, sprint-manager, business-analyst, cto]
-tools_required: [task_split, memory_search]
+tools_required: [task_split, task_depend, task_search, memory_search, knowledge_search]
 priority: 10
 description: Split a request into tasks small enough that one agent finishes one in a single run
 ---
@@ -19,17 +19,24 @@ single session, or its acceptance criteria cannot be checked in one pass.
 
 ## Procedure
 
-1. Call `memory_search` for the area. A convention already recorded changes how
-   the work splits.
-2. Write the outcome in one sentence. If you cannot, the request is not
+1. `task_search` the request first. Work already on the board — open or closed —
+   changes the split, and a second copy of an existing task wastes a whole run.
+2. `memory_search` and `knowledge_search` for the area. A recorded convention or
+   an uploaded specification changes how the work divides.
+3. Write the outcome in one sentence. If you cannot, the request is not
    understood yet — ask before splitting.
-3. List the observable changes that outcome requires. Each becomes a candidate
+4. List the observable changes that outcome requires. Each becomes a candidate
    task.
-4. Merge any candidate that cannot be verified on its own into its neighbour.
+5. Merge any candidate that cannot be verified on its own into its neighbour.
    A task whose only proof is another task's completion is not a task.
-5. Order them by real data dependency, not by convenience. Set `depends_on`.
 6. Assign each a `role_slug`. A task no role owns is a task nobody starts.
 7. Give each acceptance criteria phrased as behaviour, never as implementation.
+8. Order them with `task_depend`, after the split returns the new ids. `task_split`
+   creates tasks but does not order them: without this step the board will hand
+   out the second task before the first one exists, and nothing will report why
+   it failed. Link only real prerequisites — the board refuses to let an agent
+   claim a task whose dependencies are open, so a link added for preference
+   stalls real work.
 
 ## Constraints
 
@@ -41,9 +48,10 @@ single session, or its acceptance criteria cannot be checked in one pass.
 
 ## Output Contract
 
-One `task_split` call. Each subtask carries `title`, `spec`, `role_slug` and
-`acceptance`. Follow it with `task_update` on the parent stating how you split
-it and what you deliberately left out.
+One `task_split` call — each subtask carrying `title`, `spec`, `role_slug` and
+`acceptance` — followed by `task_depend` for every real prerequisite, and a
+`task_update` on the parent stating how you split it, what order the pieces run
+in, and what you deliberately left out.
 
 ## Examples
 

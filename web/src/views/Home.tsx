@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { motion } from "motion/react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { GitBranch, Plug, Trash2 } from "lucide-react";
+import { ago, cx, del, money, post, type CostLine } from "../lib";
 import {
-  del, post, useFetch, useStream, ago, cx, money,
-  type CostLine, type Dashboard, type Repo, type Workspace,
-} from "../lib";
-import { Badge, Button, Empty, Field, Input, Panel, Select, Stat, stateTone } from "../ui";
+  qk, useCosts, useDashboard, useRepos, useWorkspaces,
+} from "../queries";
+import { Badge, Button, DataTable, Empty, Field, Input, Panel, Select, Spinner, Stat, stateTone } from "../ui";
 
 export default function HomeView() {
-  const { data, reload } = useFetch<Dashboard>("/dashboard");
-  useStream(["runs", "boards", "meetings"], reload);
+  const { data } = useDashboard();
 
   if (!data) return <Empty>loading…</Empty>;
   const { agents, roles, tasks, runs, meetings, totals } = data;
@@ -88,9 +91,11 @@ export default function HomeView() {
               <li key={col} className="flex items-center gap-3">
                 <span className="w-28 text-[12px] text-ink-300">{col}</span>
                 <div className="h-2 flex-1 overflow-hidden rounded bg-ink-800">
-                  <div
+                  <motion.div
                     className="h-full bg-signal/60"
-                    style={{ width: `${Math.min(100, (n / tasks.length) * 100)}%` }}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min(100, (n / tasks.length) * 100)}%` }}
+                    transition={{ type: "spring", stiffness: 160, damping: 24 }}
                   />
                 </div>
                 <span className="w-6 text-right font-mono text-[12px] text-ink-500">{n}</span>
@@ -108,21 +113,23 @@ export default function HomeView() {
 }
 
 function Repos() {
-  const { data: repos, reload } = useFetch<Repo[]>("/repos");
+  const qc = useQueryClient();
+  const { data: repos } = useRepos();
   const [form, setForm] = useState({
     slug: "", remote_url: "", default_branch: "main", webhook_secret: "",
   });
-  const [error, setError] = useState<string | null>(null);
 
-  const add = async () => {
-    try {
-      await post("/repos", form);
+  const done = () => qc.invalidateQueries({ queryKey: qk.repos });
+
+  const add = useMutation({
+    mutationFn: () => post("/repos", form),
+    onSuccess: () => {
       setForm({ slug: "", remote_url: "", default_branch: "main", webhook_secret: "" });
-      reload();
-    } catch (e) {
-      setError(String((e as Error).message));
-    }
-  };
+      done();
+      qc.invalidateQueries({ queryKey: qk.boards });
+    },
+  });
+  const remove = useMutation({ mutationFn: (id: string) => del(`/repos/${id}`), onSuccess: done });
 
   return (
     <Panel title="Repositories">
@@ -135,13 +142,11 @@ function Repos() {
             </div>
             <div className="flex items-center gap-2">
               <Badge tone={r.installed ? "good" : "neutral"}>
+                <GitBranch className="size-3" />
                 {r.installed ? "cloned" : "not cloned"}
               </Badge>
-              <Button
-                variant="danger"
-                onClick={async () => { await del(`/repos/${r.id}`); reload(); }}
-              >
-                remove
+              <Button variant="ghost" onClick={() => remove.mutate(r.id)} title="remove">
+                <Trash2 className="size-3.5" />
               </Button>
             </div>
           </li>
@@ -173,12 +178,15 @@ function Repos() {
           />
         </Field>
         <div className="flex items-end">
-          <Button variant="primary" onClick={add} disabled={!form.slug || !form.remote_url}>
-            connect
+          <Button
+            variant="primary"
+            onClick={() => add.mutate()}
+            disabled={add.isPending || !form.slug || !form.remote_url}
+          >
+            {add.isPending ? <Spinner /> : <Plug className="size-3.5" />} connect
           </Button>
         </div>
       </div>
-      {error && <p className="mt-2 text-[12px] text-alert">{error}</p>}
       <p className="mt-2 text-[11px] text-ink-500">
         Connecting a repository also creates a board bound to it. Webhook endpoint:{" "}
         <code className="font-mono">POST /webhooks/github</code> — subscribe to issues,
@@ -190,8 +198,41 @@ function Repos() {
 
 function Spend() {
   const [days, setDays] = useState(7);
-  const { data: costs } = useFetch<CostLine[]>(`/costs?days=${days}`, [days]);
+  const { data: costs } = useCosts(days);
   const total = (costs ?? []).reduce((n, c) => n + c.cost_usd, 0);
+
+  const columns = useMemo<ColumnDef<CostLine, any>[]>(
+    () => [
+      { header: "Agent", accessorKey: "agent_name" },
+      {
+        header: "Role",
+        accessorKey: "role_slug",
+        cell: (c) => <span className="text-ink-500">{c.getValue<string>()}</span>,
+      },
+      { header: "Runs", accessorKey: "runs", cell: (c) => <span className="block text-right">{c.getValue<number>()}</span> },
+      {
+        header: "Failed",
+        accessorKey: "failed",
+        cell: (c) => (
+          <span className={cx("block text-right", c.getValue<number>() > 0 && "text-alert")}>
+            {c.getValue<number>()}
+          </span>
+        ),
+      },
+      {
+        header: "Tokens",
+        id: "tokens",
+        accessorFn: (r) => r.tokens_in + r.tokens_out,
+        cell: (c) => <span className="block text-right">{c.getValue<number>().toLocaleString()}</span>,
+      },
+      {
+        header: "Cost",
+        accessorKey: "cost_usd",
+        cell: (c) => <span className="block text-right">{money(c.getValue<number>())}</span>,
+      },
+    ],
+    [],
+  );
 
   return (
     <Panel
@@ -202,33 +243,12 @@ function Spend() {
         </Select>
       }
     >
-      {(costs?.length ?? 0) === 0 && <Empty>No spend recorded.</Empty>}
-      <div className="overflow-x-auto">
-        <table className="w-full text-[12px]">
-          <thead className="text-ink-500">
-            <tr className="text-left">
-              <th className="py-1 font-medium">Agent</th>
-              <th className="py-1 font-medium">Role</th>
-              <th className="py-1 text-right font-medium">Runs</th>
-              <th className="py-1 text-right font-medium">Failed</th>
-              <th className="py-1 text-right font-medium">Tokens</th>
-              <th className="py-1 text-right font-medium">Cost</th>
-            </tr>
-          </thead>
-          <tbody className="font-mono">
-            {costs?.map((c) => (
-              <tr key={c.agent_id} className="border-t border-ink-800">
-                <td className="py-1">{c.agent_name}</td>
-                <td className="py-1 text-ink-500">{c.role_slug}</td>
-                <td className="py-1 text-right">{c.runs}</td>
-                <td className={cx("py-1 text-right", c.failed > 0 && "text-alert")}>{c.failed}</td>
-                <td className="py-1 text-right">{(c.tokens_in + c.tokens_out).toLocaleString()}</td>
-                <td className="py-1 text-right">{money(c.cost_usd)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable
+        data={costs ?? []}
+        columns={columns}
+        empty="No spend recorded."
+        initialSort={[{ id: "cost_usd", desc: true }]}
+      />
       <p className="mt-2 text-[11px] text-ink-500">
         Total {money(total)} over {days} days. Actual for Claude Code runs, estimated from the
         rate table for tools that do not report money.
@@ -238,7 +258,13 @@ function Spend() {
 }
 
 function Workspaces() {
-  const { data: list, reload } = useFetch<Workspace[]>("/workspaces");
+  const qc = useQueryClient();
+  const { data: list } = useWorkspaces();
+  const release = useMutation({
+    mutationFn: (id: string) => post(`/workspaces/${id}/release`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.workspaces }),
+  });
+
   if ((list?.length ?? 0) === 0) return null;
   return (
     <Panel title="Live workspaces">
@@ -251,11 +277,7 @@ function Workspaces() {
                 {w.branch || "no branch"} · {ago(w.created_at)}
               </div>
             </div>
-            <Button
-              onClick={async () => { await post(`/workspaces/${w.id}/release`, {}); reload(); }}
-            >
-              release
-            </Button>
+            <Button onClick={() => release.mutate(w.id)} disabled={release.isPending}>release</Button>
           </li>
         ))}
       </ul>

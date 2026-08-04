@@ -16,6 +16,9 @@ services:
       timeout: 3s
       retries: 10
 
+  # The coordinator brain: triage, role routing, skill selection, meeting
+  # facilitation and embeddings. Coding agents keep their own CLI login unless
+  # an agent is set to llm_mode=proxy.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -23,11 +26,90 @@ services:
       # Only the providers you actually use need a key.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Must match IOFI_LITELLM_KEY, or every coordinator call is rejected.
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-iofi-local}
     ports:
       - "4000:4000"
     volumes:
       - ./deploy/litellm.yaml:/app/config.yaml:ro
+    healthcheck:
+      # /health/liveliness answers without auth and makes no LLM call, so this
+      # costs nothing per probe. python3 rather than curl: the image is built on
+      # Python and is not guaranteed to carry an HTTP client binary.
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # Converts uploaded PDFs, Office documents and images into markdown for the
+  # knowledge base. Optional: without it, only already-textual uploads work.
+  docling:
+    image: quay.io/docling-project/docling-serve
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+    ports:
+      - "5001:5001"
+    volumes:
+      # Models are downloaded on first use; without a volume every restart
+      # re-downloads several GB before the first document converts.
+      - doclingmodels:/opt/app-root/src/.cache
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"
+      interval: 15s
+      timeout: 5s
+      # The first start downloads models, so the window before this counts as
+      # failing is long on purpose.
+      retries: 20
+      start_period: 120s
+
+  # iofi itself. Behind a profile, so the default `docker compose up` still
+  # brings up only the three dependencies and leaves you running the binary on
+  # the host — which is what you want while developing.
+  #
+  #   docker compose up -d                  dependencies only
+  #   docker compose --profile app up -d    everything, iofi included
+  #
+  # The shipped Dockerfile installs no coding CLI. Agents are spawned as child
+  # processes inside this container, so a tool that is not in the image cannot
+  # run: add it to the Dockerfile and mount its credentials before dispatching.
+  iofi:
+    profiles: ["app"]
+    build: .
+    environment:
+      IOFI_DATABASE_URL: postgres://iofi:iofi@postgres:5432/iofi?sslmode=disable
+      IOFI_LITELLM_URL: http://litellm:4000
+      IOFI_LITELLM_KEY: ${LITELLM_MASTER_KEY:-sk-iofi-local}
+      IOFI_DOCLING_URL: http://docling:5001
+      IOFI_DOCLING_OCR: ${IOFI_DOCLING_OCR:-0}
+      IOFI_BRAIN_MODEL: ${IOFI_BRAIN_MODEL:-gpt-4o-mini}
+      IOFI_EMBED_MODEL: ${IOFI_EMBED_MODEL:-text-embedding-3-small}
+      # Generated and logged at boot when blank, which means it changes on every
+      # restart and every open browser session is signed out.
+      IOFI_AUTH_TOKEN: ${IOFI_AUTH_TOKEN:-}
+      IOFI_GITHUB_TOKEN: ${IOFI_GITHUB_TOKEN:-}
+      IOFI_GITHUB_WEBHOOK_SECRET: ${IOFI_GITHUB_WEBHOOK_SECRET:-}
+    ports:
+      - "8080:8080"
+    volumes:
+      # Bare clones and agent worktrees. Losing this loses uncommitted agent work.
+      - iofidata:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      # Not service_healthy: docling's first start downloads models for minutes,
+      # and uploads of text formats work without it. iofi reports it as offline
+      # in the header until it answers.
+      docling:
+        condition: service_started
 
 volumes:
   pgdata:
+  doclingmodels:
+  iofidata:

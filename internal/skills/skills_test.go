@@ -1,6 +1,13 @@
 package skills
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"iofi/internal/toolcat"
+)
 
 const good = `---
 slug: demo
@@ -45,6 +52,69 @@ func TestParseAcceptsCompleteSkill(t *testing.T) {
 		if _, ok := sk.Sections[want]; !ok {
 			t.Fatalf("missing parsed section %q", want)
 		}
+	}
+}
+
+func TestParseRejectsUnknownTool(t *testing.T) {
+	withTool := strings.Replace(good, "priority: 5",
+		"priority: 5\ntools_required: [memory_search, task_teleport]", 1)
+	_, err := Parse("demo.md", []byte(withTool))
+	if err == nil {
+		t.Fatal("expected a skill requiring a nonexistent tool to be rejected")
+	}
+	if !strings.Contains(err.Error(), "task_teleport") {
+		t.Fatalf("the error should name the offending tool, got: %v", err)
+	}
+}
+
+// TestShippedSkillsAreLoadable parses the real skill files. It is the check
+// that keeps the procedures handed to agents in step with the tools that
+// actually exist: rename a tool without updating a skill and this fails here
+// rather than halfway through a run.
+func TestShippedSkillsAreLoadable(t *testing.T) {
+	root := filepath.Join("..", "..", "skills")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Skipf("no skills directory to check: %v", err)
+	}
+	seen := map[string]string{}
+	files := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".md") {
+			continue
+		}
+		files++
+		raw, err := os.ReadFile(filepath.Join(root, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sk, err := Parse(e.Name(), raw)
+		if err != nil {
+			t.Errorf("%s: %v", e.Name(), err)
+			continue
+		}
+		if prev, dup := seen[sk.Frontmatter.Slug]; dup {
+			t.Errorf("%s and %s share the slug %q; the second silently overwrites the first",
+				prev, e.Name(), sk.Frontmatter.Slug)
+		}
+		seen[sk.Frontmatter.Slug] = e.Name()
+
+		if len(sk.Frontmatter.AppliesTo) == 0 {
+			t.Errorf("%s: applies_to is empty, so no role will ever receive this skill", e.Name())
+		}
+		if sk.Frontmatter.Description == "" {
+			t.Errorf("%s: no description, so skill selection has nothing to rank it on", e.Name())
+		}
+		// Parse already rejects unknown tools; this asserts the list is not
+		// simply absent, which would let a skill call anything unchecked.
+		for _, tool := range sk.Frontmatter.ToolsRequired {
+			if !toolcat.Known(tool) {
+				t.Errorf("%s: requires unknown tool %q", e.Name(), tool)
+			}
+		}
+	}
+	if files == 0 {
+		t.Fatal("the skills directory has no .md files")
 	}
 }
 

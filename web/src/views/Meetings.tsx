@@ -1,25 +1,32 @@
 import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "motion/react";
+import { Play, Plus, Send } from "lucide-react";
+import { ago, post, type Agent, type Board, type Meeting, type Role } from "../lib";
 import {
-  post, useFetch, useStream, ago,
-  type Agent, type Board, type Meeting, type MeetingMessage, type Role,
-} from "../lib";
-import { Badge, Button, Empty, Field, Input, Modal, Panel, Select, Textarea, stateTone } from "../ui";
+  qk, useAgents, useBoards, useMeeting, useMeetingMessages, useMeetings, useRoles,
+} from "../queries";
+import {
+  Badge, Button, Empty, Field, Input, Modal, Panel, Select, Spinner, Textarea, stateTone,
+} from "../ui";
 
 export default function MeetingsView() {
-  const { data: meetings, reload } = useFetch<Meeting[]>("/meetings");
-  const { data: agents } = useFetch<Agent[]>("/agents");
-  const { data: roles } = useFetch<Role[]>("/roles");
-  const { data: boards } = useFetch<Board[]>("/boards");
+  const { data: meetings } = useMeetings();
+  const { data: agents } = useAgents();
+  const { data: roles } = useRoles();
+  const { data: boards } = useBoards();
   const [open, setOpen] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-
-  useStream(["meetings"], reload);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[22rem_1fr]">
       <Panel
         title="Rooms"
-        actions={<Button variant="primary" onClick={() => setCreating(true)}>+ call a meeting</Button>}
+        actions={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            <Plus className="size-3.5" /> call a meeting
+          </Button>
+        }
       >
         {(meetings?.length ?? 0) === 0 && <Empty>No meetings yet.</Empty>}
         <ul className="divide-y divide-ink-800">
@@ -27,7 +34,7 @@ export default function MeetingsView() {
             <li key={m.id}>
               <button
                 onClick={() => setOpen(m.id)}
-                className="w-full py-2.5 text-left hover:opacity-80"
+                className="w-full py-2.5 text-left transition-opacity hover:opacity-80"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-[13px]">{m.title}</span>
@@ -43,43 +50,46 @@ export default function MeetingsView() {
       </Panel>
 
       {open ? (
-        <Room id={open} agents={agents ?? []} onChanged={reload} />
+        <Room id={open} agents={agents ?? []} />
       ) : (
         <Panel title="Transcript"><Empty>Pick a room.</Empty></Panel>
       )}
 
-      {creating && (
-        <NewMeeting
-          agents={agents ?? []}
-          roles={roles ?? []}
-          boards={boards ?? []}
-          onClose={() => setCreating(false)}
-          onSaved={(id) => { setCreating(false); setOpen(id); reload(); }}
-        />
-      )}
+      <AnimatePresence>
+        {creating && (
+          <NewMeeting
+            agents={agents ?? []}
+            roles={roles ?? []}
+            boards={boards ?? []}
+            onClose={() => setCreating(false)}
+            onOpened={setOpen}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function Room({ id, agents, onChanged }: { id: string; agents: Agent[]; onChanged: () => void }) {
-  const { data: meeting, reload: reloadMeeting } = useFetch<Meeting>(`/meetings/${id}`);
-  const { data: messages, reload } = useFetch<MeetingMessage[]>(`/meetings/${id}/messages`);
+function Room({ id, agents }: { id: string; agents: Agent[] }) {
+  const qc = useQueryClient();
+  const { data: meeting } = useMeeting(id);
+  const { data: messages } = useMeetingMessages(id);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  useStream([`meeting:${id}`], () => { reload(); reloadMeeting(); });
+  const run = useMutation({
+    mutationFn: () => post(`/meetings/${id}/run`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.meetings }),
+  });
+
+  const say = useMutation({
+    mutationFn: (content: string) => post(`/meetings/${id}/messages`, { content }),
+    onSuccess: () => {
+      setDraft("");
+      qc.invalidateQueries({ queryKey: qk.meetingMessages(id) });
+    },
+  });
 
   if (!meeting) return <Panel title="Transcript"><Empty>loading…</Empty></Panel>;
-
-  const run = async () => {
-    setBusy(true);
-    try {
-      await post(`/meetings/${id}/run`, {});
-      onChanged();
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <Panel
@@ -87,8 +97,12 @@ function Room({ id, agents, onChanged }: { id: string; agents: Agent[]; onChange
       actions={
         <>
           <Badge tone={stateTone(meeting.state)}>{meeting.state}</Badge>
-          <Button variant="primary" onClick={run} disabled={busy || !!meeting.closed_at}>
-            {busy ? "running…" : "run discussion"}
+          <Button
+            variant="primary"
+            onClick={() => run.mutate()}
+            disabled={run.isPending || !!meeting.closed_at}
+          >
+            {run.isPending ? <Spinner /> : <Play className="size-3.5" />} run discussion
           </Button>
         </>
       }
@@ -107,23 +121,35 @@ function Room({ id, agents, onChanged }: { id: string; agents: Agent[]; onChange
 
       <div className="max-h-[28rem] space-y-3 overflow-y-auto pr-1">
         {(messages?.length ?? 0) === 0 && <Empty>Nothing said yet.</Empty>}
-        {messages?.map((m) => (
-          <article key={m.id} className="rounded-md border border-ink-800 bg-ink-850 p-3">
-            <div className="flex items-center gap-2 text-[11px] text-ink-500">
-              <span className="font-medium text-ink-300">{m.speaker}</span>
-              <span>round {m.round}</span>
-              <span>{ago(m.created_at)}</span>
-            </div>
-            <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap">{m.content}</p>
-          </article>
-        ))}
+        <AnimatePresence initial={false}>
+          {messages?.map((m) => (
+            <motion.article
+              key={m.id}
+              layout
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-md border border-ink-800 bg-ink-850 p-3"
+            >
+              <div className="flex items-center gap-2 text-[11px] text-ink-500">
+                <span className="font-medium text-ink-300">{m.speaker}</span>
+                <span>round {m.round}</span>
+                <span>{ago(m.created_at)}</span>
+              </div>
+              <p className="mt-1.5 text-[13px] leading-relaxed whitespace-pre-wrap">{m.content}</p>
+            </motion.article>
+          ))}
+        </AnimatePresence>
       </div>
 
       {meeting.decision && (
-        <div className="mt-3 rounded-md border border-signal/30 bg-signal/5 p-3">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="mt-3 rounded-md border border-signal/30 bg-signal/5 p-3"
+        >
           <div className="text-[11px] tracking-wide text-signal uppercase">Decision</div>
           <p className="mt-1 text-[13px] whitespace-pre-wrap">{meeting.decision}</p>
-        </div>
+        </motion.div>
       )}
 
       <div className="mt-3 flex gap-2">
@@ -131,22 +157,10 @@ function Room({ id, agents, onChanged }: { id: string; agents: Agent[]; onChange
           placeholder="speak as the Founder…"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={async (e) => {
-            if (e.key !== "Enter" || !draft.trim()) return;
-            await post(`/meetings/${id}/messages`, { content: draft });
-            setDraft("");
-            reload();
-          }}
+          onKeyDown={(e) => e.key === "Enter" && draft.trim() && say.mutate(draft)}
         />
-        <Button
-          onClick={async () => {
-            if (!draft.trim()) return;
-            await post(`/meetings/${id}/messages`, { content: draft });
-            setDraft("");
-            reload();
-          }}
-        >
-          send
+        <Button onClick={() => draft.trim() && say.mutate(draft)} disabled={say.isPending}>
+          {say.isPending ? <Spinner /> : <Send className="size-3.5" />} send
         </Button>
       </div>
     </Panel>
@@ -154,30 +168,27 @@ function Room({ id, agents, onChanged }: { id: string; agents: Agent[]; onChange
 }
 
 function NewMeeting({
-  agents, roles, boards, onClose, onSaved,
+  agents, roles, boards, onClose, onOpened,
 }: {
   agents: Agent[]; roles: Role[]; boards: Board[];
-  onClose: () => void; onSaved: (id: string) => void;
+  onClose: () => void; onOpened: (id: string) => void;
 }) {
+  const qc = useQueryClient();
   const [form, setForm] = useState({
     title: "", kind: "grooming", agenda: "", max_rounds: 3,
     board_id: boards[0]?.id ?? "",
   });
   const [picked, setPicked] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
 
-  const save = async () => {
-    try {
-      const m = await post<Meeting>("/meetings", {
-        ...form,
-        board_id: form.board_id || null,
-        participants: picked,
-      });
-      onSaved(m.id);
-    } catch (e) {
-      setError(String((e as Error).message));
-    }
-  };
+  const save = useMutation({
+    mutationFn: () =>
+      post<Meeting>("/meetings", { ...form, board_id: form.board_id || null, participants: picked }),
+    onSuccess: (m) => {
+      qc.invalidateQueries({ queryKey: qk.meetings });
+      onOpened(m.id);
+      onClose();
+    },
+  });
 
   return (
     <Modal title="Call a meeting" onClose={onClose} wide>
@@ -219,14 +230,12 @@ function NewMeeting({
             return (
               <button
                 key={a.id}
-                onClick={() =>
-                  setPicked(on ? picked.filter((p) => p !== a.id) : [...picked, a.id])
-                }
+                onClick={() => setPicked(on ? picked.filter((p) => p !== a.id) : [...picked, a.id])}
                 className={
-                  "rounded-md border px-2 py-1 text-[12px] " +
+                  "rounded-md border px-2 py-1 text-[12px] transition-colors " +
                   (on
                     ? "border-signal/40 bg-signal/15 text-signal"
-                    : "border-ink-700 bg-ink-850 text-ink-300")
+                    : "border-ink-700 bg-ink-850 text-ink-300 hover:border-ink-500")
                 }
               >
                 {a.name}
@@ -238,11 +247,14 @@ function NewMeeting({
           })}
         </div>
       </Field>
-      {error && <p className="text-[12px] text-alert">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onClose}>cancel</Button>
-        <Button variant="primary" onClick={save} disabled={!form.title.trim() || picked.length === 0}>
-          open room
+        <Button
+          variant="primary"
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !form.title.trim() || picked.length === 0}
+        >
+          {save.isPending ? <Spinner /> : null} open room
         </Button>
       </div>
     </Modal>

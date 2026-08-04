@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"iofi/internal/store"
+	"iofi/internal/toolcat"
 )
 
 // Every skill must carry all of these headings. Enforced at load so an agent
@@ -84,6 +85,20 @@ func Parse(name string, raw []byte) (*Skill, error) {
 	}
 	if len(blank) > 0 {
 		return nil, fmt.Errorf("%s: empty section(s): %s", name, strings.Join(blank, ", "))
+	}
+
+	// A procedure that instructs an agent to call a tool nobody registered
+	// fails halfway through the run with nothing explaining why, so a name the
+	// catalog does not know is a load failure rather than a warning.
+	var unknown []string
+	for _, tool := range fmData.ToolsRequired {
+		if !toolcat.Known(tool) {
+			unknown = append(unknown, tool)
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, fmt.Errorf("%s: tools_required names no such tool: %s (known tools: %s)",
+			name, strings.Join(unknown, ", "), strings.Join(toolcat.Names(), ", "))
 	}
 	return &Skill{Frontmatter: fmData, Body: strings.TrimSpace(body), Sections: sections, Path: name}, nil
 }

@@ -132,6 +132,38 @@ func (s *Store) GetAgent(ctx context.Context, id string) (*Agent, error) {
 	return selectOne[Agent](ctx, s, `SELECT `+agentCols+` FROM agents WHERE id=$1`, id)
 }
 
+func (s *Store) GetAgentByName(ctx context.Context, name string) (*Agent, error) {
+	return selectOne[Agent](ctx, s, `SELECT `+agentCols+` FROM agents WHERE name=$1`, name)
+}
+
+// RosterLine is one agent as another agent sees them: who they are, what they
+// own, and whether there is room to give them work.
+type RosterLine struct {
+	AgentID   string `db:"agent_id" json:"agent_id"`
+	AgentName string `db:"agent_name" json:"agent_name"`
+	RoleSlug  string `db:"role_slug" json:"role_slug"`
+	RoleName  string `db:"role_name" json:"role_name"`
+	Status    string `db:"status" json:"status"`
+	Capacity  int    `db:"capacity" json:"capacity"`
+	ActiveRun int    `db:"active_runs" json:"active_runs"`
+	OpenTasks int    `db:"open_tasks" json:"open_tasks"`
+}
+
+// Roster answers "who can take this" without exposing model or config, which
+// no agent needs and which changes the answer nobody asked for.
+func (s *Store) Roster(ctx context.Context) ([]RosterLine, error) {
+	return selectAll[RosterLine](ctx, s, `
+		SELECT a.id AS agent_id, a.name AS agent_name, r.slug AS role_slug, r.name AS role_name,
+		       a.status, a.capacity,
+		       (SELECT count(*) FROM runs x
+		         WHERE x.agent_id = a.id AND x.state IN ('queued','running'))::int AS active_runs,
+		       (SELECT count(*) FROM tasks t
+		         WHERE t.assignee_id = a.id AND t.closed_at IS NULL)::int AS open_tasks
+		FROM agents a
+		JOIN roles r ON r.id = a.role_id
+		ORDER BY r.slug, a.name`)
+}
+
 func (s *Store) CreateAgent(ctx context.Context, a Agent) (*Agent, error) {
 	return selectOne[Agent](ctx, s, `
 		INSERT INTO agents (name, role_id, tool_id, llm_mode, model, capacity, config)
