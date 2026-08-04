@@ -1,0 +1,33 @@
+services:
+  postgres:
+    # pgvector ships the extension iofi's shared memory needs.
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: iofi
+      POSTGRES_PASSWORD: iofi
+      POSTGRES_DB: iofi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iofi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      # Only the providers you actually use need a key.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-iofi-local}
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./deploy/litellm.yaml:/app/config.yaml:ro
+
+volumes:
+  pgdata:

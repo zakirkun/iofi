@@ -1,0 +1,32 @@
+# LiteLLM is iofi's coordinator brain: role routing, triage, meeting
+# facilitation and embeddings. Coding agents keep their own CLI auth unless an
+# agent is set to llm_mode=proxy.
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+litellm_settings:
+  drop_params: true
+  # Roles that name a model iofi has not configured fall back here instead of
+  # failing the run.
+  fallbacks: [{ "gpt-4o": ["gpt-4o-mini"] }]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
