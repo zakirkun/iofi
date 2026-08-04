@@ -160,6 +160,36 @@ func (s *Sync) OpenPR(ctx context.Context, taskID, title, body string) (string, 
 	return pr.HTMLURL, nil
 }
 
+// PRStatus reports the live state of the pull request opened for a task.
+// Implements mcpsrv.PRService. It reads GitHub rather than the local link row
+// because merge and close happen there, and a webhook that never arrived would
+// leave the local copy claiming a merged PR is still open.
+func (s *Sync) PRStatus(ctx context.Context, taskID string) (string, error) {
+	if !s.Client.Enabled() {
+		return "", fmt.Errorf("github token not configured")
+	}
+	link, err := s.Store.GetLinkByTask(ctx, taskID, "pull_request")
+	if err == store.ErrNotFound {
+		return "", fmt.Errorf("no pull request has been opened for task %s", taskID)
+	}
+	if err != nil {
+		return "", err
+	}
+	repo, err := s.Store.GetRepo(ctx, link.RepoID)
+	if err != nil {
+		return "", err
+	}
+	pr, err := s.Client.GetPR(ctx, repo.Slug, link.Number)
+	if err != nil {
+		return "", err
+	}
+	state := pr.State
+	if pr.Merged {
+		state = "merged"
+	}
+	return fmt.Sprintf("PR #%d on %s is %s\n%s", pr.Number, repo.Slug, state, pr.HTMLURL), nil
+}
+
 func (s *Sync) workspaceFor(ctx context.Context, taskID string) (*store.Workspace, error) {
 	ws, err := s.Store.WorkspaceForTask(ctx, taskID)
 	if err == store.ErrNotFound {

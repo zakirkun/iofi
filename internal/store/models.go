@@ -217,6 +217,43 @@ type Memory struct {
 	Score       float64    `db:"score" json:"score,omitempty"` // similarity, search results only
 }
 
+// KnowledgeDoc is a reference document the Founder uploaded. Content holds the
+// whole extracted markdown; the retrievable passages live in KnowledgeChunk.
+type KnowledgeDoc struct {
+	ID         string    `db:"id" json:"id"`
+	Scope      string    `db:"scope" json:"scope"`
+	ScopeRef   string    `db:"scope_ref" json:"scope_ref"`
+	Title      string    `db:"title" json:"title"`
+	Filename   string    `db:"filename" json:"filename"`
+	MIME       string    `db:"mime" json:"mime"`
+	Bytes      int64     `db:"bytes" json:"bytes"`
+	SHA256     string    `db:"sha256" json:"sha256"`
+	SourcePath string    `db:"source_path" json:"-"` // absolute host path, not the founder's business
+	Extractor  string    `db:"extractor" json:"extractor"`
+	State      string    `db:"state" json:"state"`
+	Error      string    `db:"error" json:"error"`
+	Content    string    `db:"content" json:"content,omitempty"`
+	Tags       []string  `db:"tags" json:"tags"`
+	UploadedBy string    `db:"uploaded_by" json:"uploaded_by"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
+
+	Chunks int `db:"chunks" json:"chunks"` // list views only
+}
+
+type KnowledgeChunk struct {
+	ID      int64  `db:"id" json:"id"`
+	DocID   string `db:"doc_id" json:"doc_id"`
+	Idx     int    `db:"idx" json:"idx"`
+	Heading string `db:"heading" json:"heading"`
+	Content string `db:"content" json:"content"`
+
+	// Search results only.
+	Score    float64 `db:"score" json:"score,omitempty"`
+	DocTitle string  `db:"doc_title" json:"doc_title,omitempty"`
+	DocScope string  `db:"doc_scope" json:"doc_scope,omitempty"`
+}
+
 // ---------------------------------------------------------------- meetings
 
 type Meeting struct {

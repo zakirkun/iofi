@@ -104,6 +104,29 @@ func (s *Store) GetTask(ctx context.Context, id string) (*Task, error) {
 	return selectOne[Task](ctx, s, `SELECT `+taskCols+` FROM tasks WHERE id=$1`, id)
 }
 
+// SearchTasks matches text across the three fields that carry meaning. Closed
+// tasks are included by default: the question an agent asks before creating
+// work is "has this been done", and excluding finished work answers it wrongly.
+func (s *Store) SearchTasks(ctx context.Context, boardID, query string, openOnly bool, limit int) ([]Task, error) {
+	where := []string{`(title ILIKE '%'||$1||'%' OR spec ILIKE '%'||$1||'%' OR acceptance ILIKE '%'||$1||'%')`}
+	args := []any{query}
+	if boardID != "" {
+		args = append(args, boardID)
+		where = append(where, fmt.Sprintf("board_id=$%d", len(args)))
+	}
+	if openOnly {
+		where = append(where, "closed_at IS NULL")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	args = append(args, limit)
+	return selectAll[Task](ctx, s, `SELECT `+taskCols+` FROM tasks WHERE `+
+		strings.Join(where, " AND ")+
+		fmt.Sprintf(` ORDER BY closed_at IS NOT NULL, priority, updated_at DESC LIMIT $%d`, len(args)),
+		args...)
+}
+
 func (s *Store) CreateTask(ctx context.Context, t Task, actor string) (*Task, error) {
 	created, err := selectOne[Task](ctx, s, `
 		INSERT INTO tasks (board_id, parent_id, title, spec, column_key, position, priority,
@@ -272,6 +295,47 @@ func (s *Store) UnmetDependencies(ctx context.Context, taskID string) ([]string,
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// ColumnCounts returns open task counts keyed by column, so a WIP limit can be
+// read before it is hit rather than discovered by a rejected move.
+func (s *Store) ColumnCounts(ctx context.Context, boardID string) (map[string]int, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT column_key, count(*)::int FROM tasks
+		WHERE board_id=$1 AND closed_at IS NULL GROUP BY column_key`, boardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var k string
+		var n int
+		if err := rows.Scan(&k, &n); err != nil {
+			return nil, err
+		}
+		out[k] = n
+	}
+	return out, rows.Err()
+}
+
+// WouldCycle reports whether giving taskID the prerequisites in next puts it in
+// a dependency cycle. Every task in such a cycle waits on itself forever and
+// UnmetDependencies would report the block without ever explaining it, so this
+// is checked before the write rather than diagnosed after.
+func (s *Store) WouldCycle(ctx context.Context, taskID string, next []string) (bool, error) {
+	if len(next) == 0 {
+		return false, nil
+	}
+	var cyclic bool
+	err := s.Pool.QueryRow(ctx, `
+		WITH RECURSIVE reach(id) AS (
+			SELECT unnest($2::uuid[])
+			UNION
+			SELECT unnest(t.depends_on) FROM tasks t JOIN reach ON t.id = reach.id
+		)
+		SELECT EXISTS (SELECT 1 FROM reach WHERE id = $1)`, taskID, next).Scan(&cyclic)
+	return cyclic, err
 }
 
 // StalledTasks surfaces work that has sat untouched, for the sprint manager.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 const TOKEN_KEY = "iofi.token";
 
@@ -39,46 +39,23 @@ export const put = <T,>(path: string, body: unknown) =>
   api<T>(path, { method: "PUT", body: JSON.stringify(body) });
 export const del = (path: string) => api<void>(path, { method: "DELETE" });
 
-/** Fetch on mount, expose a refetch for after mutations.
- *  The in-flight request is aborted when the path changes or the component
- *  unmounts, so switching tabs quickly cannot land a stale response. */
-export function useFetch<T>(path: string | null, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(!!path);
-  const inFlight = useRef<AbortController | null>(null);
-
-  const reload = useCallback(() => {
-    if (!path) return;
-    inFlight.current?.abort();
-    const ctrl = new AbortController();
-    inFlight.current = ctrl;
-    setLoading(true);
-    api<T>(path, { signal: ctrl.signal })
-      .then((d) => {
-        if (ctrl.signal.aborted) return;
-        setData(d);
-        setError(null);
-      })
-      .catch((e) => {
-        if (ctrl.signal.aborted || e?.name === "AbortError") return;
-        setError(String(e.message ?? e));
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, ...deps]);
-
-  useEffect(() => {
-    reload();
-    return () => inFlight.current?.abort();
-  }, [reload]);
-
-  return { data, error, loading, reload };
-}
+/** Multipart upload. Content-Type is deliberately left unset: the browser must
+ *  generate it so the multipart boundary matches the body it actually wrote. */
+export const upload = <T,>(path: string, form: FormData) =>
+  api<T>(path, { method: "POST", body: form, headers: { "Content-Type": "" } });
 
 export type BusEvent = { topic: string; kind: string; data: unknown };
+
+/** Every kind the server publishes. EventSource delivers named events only to
+ *  listeners registered for that name, so an unlisted kind is silently dropped
+ *  and the UI stops updating for it with nothing to show why. */
+const EVENT_KINDS = [
+  "task_created", "task_updated", "task_moved", "task_claimed", "task_split",
+  "task_handoff", "started", "finished", "text", "tool_call", "tool_result",
+  "usage", "error", "done", "message", "state", "decided", "closed", "created",
+  "updated", "opened", "issue_imported", "question", "uploaded", "ready",
+  "failed", "deleted",
+];
 
 /** One SSE connection per topic set; onEvent is kept in a ref so re-renders
  *  never tear the stream down. */
@@ -90,24 +67,22 @@ export function useStream(topics: string[], onEvent: (e: BusEvent) => void) {
   useEffect(() => {
     if (!key) return;
     // EventSource cannot set headers, so the token travels as a query param.
-    const qs = topics
+    const qs = key
+      .split("|")
       .map((t) => `topic=${encodeURIComponent(t)}`)
       .concat(`token=${encodeURIComponent(getToken())}`)
       .join("&");
     const src = new EventSource(`/api/events?${qs}`);
-    src.onmessage = (m) => handler.current(JSON.parse(m.data));
-    // Named events arrive with their own type; catch them all.
-    const kinds = [
-      "task_created", "task_updated", "task_moved", "task_claimed", "task_split",
-      "task_handoff", "started", "finished", "text", "tool_call", "tool_result",
-      "usage", "error", "done", "message", "state", "decided", "closed", "created",
-      "opened", "issue_imported",
-    ];
-    for (const k of kinds) {
-      src.addEventListener(k, (m) => handler.current(JSON.parse((m as MessageEvent).data)));
-    }
+    const emit = (m: MessageEvent) => {
+      try {
+        handler.current(JSON.parse(m.data));
+      } catch {
+        // A malformed frame must not kill the stream for every other topic.
+      }
+    };
+    src.onmessage = emit;
+    for (const k of EVENT_KINDS) src.addEventListener(k, emit as EventListener);
     return () => src.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 }
 
@@ -125,6 +100,12 @@ export const ago = (iso?: string | null) => {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+};
+
+export const bytes = (n: number) => {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
 // ---------------------------------------------------------------- types
@@ -146,6 +127,15 @@ export type Tool = {
   parse_mode: string; mcp_style: string; mcp_target: string; enabled: boolean;
 };
 
+/** One MCP tool an agent can be granted. Served from /tools/catalog, which is
+ *  generated from the same list the server registers from. */
+export type ToolSpec = {
+  name: string;
+  category: "board" | "knowledge" | "org" | "collab" | "repo" | "ops";
+  description: string;
+  mutates?: boolean;
+};
+
 export type Agent = {
   id: string; name: string; role_id: string; tool_id: string;
   llm_mode: string; model: string; status: string; capacity: number;
@@ -157,7 +147,7 @@ export type Board = { id: string; slug: string; name: string; repo_id: string | 
 
 export type Task = {
   id: string; board_id: string; seq: number; title: string; spec: string;
-  column_key: string; priority: number; acceptance: string;
+  column_key: string; position: number; priority: number; acceptance: string;
   role_required: string | null; assignee_id: string | null;
   depends_on: string[]; labels: string[];
   created_at: string; updated_at: string; closed_at: string | null;
@@ -170,7 +160,20 @@ export type TaskEvent = {
 
 export type Memory = {
   id: string; scope: string; kind: string; title: string; body: string;
-  tags: string[]; created_at: string; score?: number;
+  tags: string[]; created_at: string; expires_at: string | null; score?: number;
+};
+
+export type KnowledgeDoc = {
+  id: string; scope: string; scope_ref: string; title: string;
+  filename: string; mime: string; bytes: number; sha256: string;
+  extractor: string; state: "pending" | "ready" | "failed"; error: string;
+  content?: string; tags: string[]; uploaded_by: string;
+  created_at: string; updated_at: string; chunks: number;
+};
+
+export type KnowledgeChunk = {
+  id: number; doc_id: string; idx: number; heading: string; content: string;
+  score?: number; doc_title?: string; doc_scope?: string;
 };
 
 export type Meeting = {
@@ -206,7 +209,7 @@ export type CostLine = {
   runs: number; failed: number; tokens_in: number; tokens_out: number; cost_usd: number;
 };
 
-export type TokenPrice = { in: number; out: number };
+export type Health = { ok: boolean; database: string; litellm: string; docling: string };
 
 export type Dashboard = {
   agents: Agent[]; roles: Role[]; boards: Board[]; tasks: Task[];

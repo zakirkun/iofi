@@ -97,7 +97,7 @@ You type: *"Users should be able to reset their password."*
 ## How it works
 
 ```
-                  Browser — React + Vite + Tailwind
+          Browser — React 19 + TanStack + Tailwind + Vite
                   served from the Go binary's embed.FS
                             │  REST + SSE
                             ▼
@@ -224,6 +224,8 @@ Environment variables only; no config file. Full list in
 | `IOFI_BRAIN_MODEL` | `gpt-4o-mini` | Triage, skill selection, facilitation |
 | `IOFI_EMBED_MODEL` | `text-embedding-3-small` | Blank disables embeddings; memory falls back to keyword search |
 | `IOFI_EMBED_DIM` | `1536` | Must match the `vector(N)` column. Checked at boot, with the `ALTER` to run if it does not |
+| `IOFI_DOCLING_URL` | — | Document converter for the knowledge base. Blank still accepts markdown, text, CSV, JSON, YAML and AsciiDoc; PDF, Office files and images are refused |
+| `IOFI_DOCLING_OCR` | `0` | OCR scanned pages. Much slower, and downloads OCR models on first use |
 | `IOFI_GITHUB_TOKEN` | — | Blank disables sync and `pr_open`; everything else still runs |
 | `IOFI_GITHUB_WEBHOOK_SECRET` | — | Fallback when a repository has no secret of its own |
 | `IOFI_MAX_RUNS` | `4` | Concurrent agent processes across the whole company |
@@ -308,8 +310,17 @@ Roles are fully editable under **Org → Roles**, including the prompt.
 
 ### Skills
 
-A reusable markdown procedure, many-to-many with roles. See
-[Writing skills](#writing-skills).
+A reusable markdown procedure, many-to-many with roles. Thirty-three ship in
+`skills/`, six to fourteen per role, covering the work each role actually does:
+`root-cause-fix` and `write-tests` for programmers, `regression-check` and
+`defect-report` for QA, `deploy-and-rollback` and `incident-command` for DevOps,
+`sprint-plan` and `board-hygiene` for the sprint manager, `cost-audit` and
+`budget-forecast` for finance. Three apply to every role —
+`use-knowledge-base`, `escalation-path` and `record-knowledge`.
+
+A role usually has more skills than fit in a brief, so the coordinator selects
+the five most relevant to the task; the rest stay reachable through `skill_list`
+and `skill_get`. See [Writing skills](#writing-skills).
 
 ### Agents and tools
 
@@ -368,27 +379,115 @@ Agents reach iofi over MCP with a bearer token scoped to their run. The token
 carries the agent, role, task, board and workspace, so `task_update` with no
 arguments means "the task I was dispatched for".
 
+Forty tools, grouped by what they touch. The list lives in
+`internal/toolcat` — the single place a tool name is written down. It feeds
+three consumers that used to drift apart: the MCP registration, the
+`tool_policy` allow-list on each role, and the `tools_required` frontmatter of
+every skill. A name in one and not the others now fails the build.
+
+**Board** — `task_list` `task_get` `task_search` `task_claim` `task_create`
+`task_split` `task_update` `task_assign` `task_depend` `task_comment`
+`task_label` `kanban_move` `board_get`
+
 | Tool | What it does |
 |---|---|
 | `task_list` | Board tasks with assignee, owning role, idle hours and dependency-blocked status. Filter to stalled work with `stalled_hours` |
-| `task_get` | Full spec, acceptance criteria and activity of one task |
-| `task_claim` | Take an unassigned task. Atomic — two agents racing, exactly one wins |
-| `task_create` | Put new work on the board for a role |
-| `task_split` | Break a task into child tasks, each with an owning role |
-| `task_update` | Report progress and the final summary |
-| `kanban_move` | Move a task between columns |
-| `memory_write` | Record a decision, convention or pitfall, with confidence and optional expiry |
-| `memory_search` | Read what the company already knows |
-| `meeting_open` | Open a discussion; the facilitator starts immediately |
-| `meeting_post` / `meeting_read` | Speak in and read a room |
-| `handoff` | Pass a task to another role with a note |
-| `ask_role` | Ask another role a question and get an answer now, in character |
-| `cost_report` | Token and cost totals per agent, for Finance |
-| `repo_status` | `git status` of the agent's own workspace |
-| `pr_open` | Push the branch and open a pull request linked to the issue |
+| `task_search` | Text search across title, spec and acceptance, closed tasks included — the check before creating work that already exists |
+| `task_claim` | Take an unassigned task. Atomic, and refused while a prerequisite is still open |
+| `task_assign` | Give a task to a named agent. Warns when the agent's role is not the one the task asks for |
+| `task_depend` | Declare or remove prerequisites. Rejects a link that would create a cycle, which would strand every task in it |
+| `task_comment` | A note that changes no field — a finding, or a question being waited on |
+| `board_get` | Columns, WIP limits and how full each one is, before a move is refused |
+
+**Memory and documents** — `memory_write` `memory_search` `memory_update`
+`memory_forget` `knowledge_search` `knowledge_get` `knowledge_list`
+
+| Tool | What it does |
+|---|---|
+| `memory_update` | Correct a memory that was wrong. Records the previous text and the reason, so two records never disagree |
+| `memory_forget` | Retire a memory. It leaves search immediately; the row stays for anyone auditing what the company used to believe |
+| `knowledge_search` | Search the documents the Founder uploaded. Authoritative in a way agent-written memory is not |
+| `knowledge_get` | Read an uploaded document, paged by section |
+| `knowledge_list` | What reference material this role can see |
+
+**Who exists** — `role_list` `agent_roster` `skill_list` `skill_get`
+
+| Tool | What it does |
+|---|---|
+| `role_list` | Every role slug. `handoff` and `ask_role` reject a guessed one, so this is the step before either |
+| `agent_roster` | Who holds which role and who has capacity right now |
+| `skill_list` / `skill_get` | The procedures this role has, and one read in full. Only the five most relevant reach the brief |
+
+**Talking to others** — `meeting_open` `meeting_post` `meeting_read`
+`meeting_list` `meeting_close` `handoff` `ask_role` `escalate_founder`
+
+| Tool | What it does |
+|---|---|
+| `meeting_list` | Rooms this agent is in, so a second one is not opened on the same topic |
+| `meeting_close` | Record the decision and close. Also writes it as a memory — a decision that lives only in a transcript is one nobody finds |
+| `ask_role` | Ask another role and get an answer now, in character |
+| `escalate_founder` | Put a question to the human when no role owns it. The task moves to blocked; the run does not wait |
+
+**Repository** — `repo_status` `repo_diff` `repo_log` `pr_open` `pr_status`
+
+| Tool | What it does |
+|---|---|
+| `repo_diff` | The branch against its base plus uncommitted work, capped at 60 KB. QA verifies code it did not write, which is impossible without this |
+| `repo_log` | Commits on the branch that are not on the base |
+| `pr_status` | Whether the pull request is open, merged or closed — read from GitHub, not from the local link row |
+
+**Runs and cost** — `cost_report` `run_list` `run_tail`
+
+| Tool | What it does |
+|---|---|
+| `run_list` | Recent runs with state, cost and failure reason |
+| `run_tail` | The last events of a run, for finding out why it failed instead of dispatching the same task again |
 
 `ask_role` answers through the coordinator rather than spawning the other
 agent's CLI. Two agents blocking on one capacity slot would deadlock.
+
+`escalate_founder` refuses an empty `tried` field: the Founder is the slowest
+path in the company and must not be asked something a role already knows.
+
+---
+
+## Knowledge base
+
+Upload the documents the company must obey — specifications, contracts,
+standards, runbooks — under **Knowledge → Reference documents**. They are
+distinct from `memories`, which agents write about themselves: where the two
+disagree, the document wins, and the brief says so.
+
+**Scope** decides who sees a document: everyone, one role, or one board. A
+role-scoped document is invisible to every other role, in search and by id.
+
+**Extraction** runs in the background, because a scanned PDF takes longer than
+any HTTP request should. The upload returns immediately with the document in
+`pending`; the console polls it to `ready` or `failed`. A failure keeps the row
+and the original file, so a document that failed for want of a converter is
+re-extracted with one button rather than re-uploaded.
+
+| Format | Read by |
+|---|---|
+| `.md` `.txt` `.csv` `.tsv` `.json` `.yaml` `.log` `.rst` `.adoc` | iofi directly — no extra service |
+| `.pdf` `.docx` `.pptx` `.xlsx` `.html` `.png` `.jpg` `.tiff` … | [docling](https://github.com/docling-project/docling-serve), set `IOFI_DOCLING_URL` |
+
+Docling is Python, so it runs as its own container beside iofi — the same
+arrangement as LiteLLM. `docker compose up` starts it. Without it, those
+formats are **refused at upload** rather than stored as documents that
+permanently read as failed. Set `IOFI_DOCLING_OCR=1` for scanned pages; it is
+much slower and downloads OCR models on first use.
+
+Documents are split into passages of roughly 1200 characters that follow the
+document's own headings, with 150 characters of overlap so a sentence on a
+boundary is not missed by both neighbours. Each passage is embedded together
+with its heading — a clause retrieved without its section title is usually
+unusable. Without an embedding model configured, search falls back to keyword
+matching rather than failing.
+
+The top passages for a task are injected into the agent's brief above its
+memories, under **Reference material the Founder uploaded**, capped at 6000
+characters so a 300-page standard cannot crowd out the task itself.
 
 ---
 
@@ -477,16 +576,22 @@ A good one and a bad one.
 
 A file missing or leaving empty any of those six is **rejected at load** —
 consistency is enforced by the loader, not by convention, so an agent never
-receives a half-written procedure. A skill declaring `tools_required` that its
-target role's policy forbids produces a warning rather than a failure halfway
-through a run.
+receives a half-written procedure.
+
+`tools_required` is checked twice. A name that is not in `internal/toolcat`
+is a **load failure**: a procedure telling an agent to call a tool nobody
+registered fails halfway through a run with nothing explaining why. A name that
+exists but that the target role's policy forbids is a **warning** — the skill is
+still usable, and the fix is usually the policy.
 
 Files in `skills/` load at boot and wire themselves to the roles in
 `applies_to`. They are also editable under **Org → Skills** with identical
 validation. `POST /api/skills/reload` re-reads the directory without a restart.
 
-Five skills ship as working examples: `task-breakdown`, `implement-task`,
-`verify-acceptance`, `architecture-decision`, `triage-ticket`.
+`go test ./internal/skills/` parses every shipped file and fails on a duplicate
+slug, a missing description, an empty `applies_to`, or a tool name the catalog
+does not know — so renaming a tool without updating the skills that call it
+breaks the build rather than a run.
 
 ---
 
@@ -586,14 +691,23 @@ internal/brain     LiteLLM client: triage, skill selection, facilitation
 internal/meeting   discussion state machine
 internal/github    webhook in, REST out, loop guard
 internal/skills    markdown loader and validator
+internal/toolcat   the one list of MCP tool names, imported by the three users
+internal/knowledge document chunking and background ingestion
+internal/docling   HTTP client for the document converter
 internal/store     pgx queries, models, embedded migrations
 internal/session   run-scoped MCP tokens
 internal/bus       in-process pub/sub feeding SSE
 internal/config    environment configuration
-skills/            skill library
+skills/            skill library — 33 procedures
 web/               React console, embedded via embed.FS
 docs/              PRD, ERD, FLOWS, ARCHITECTURE
 ```
+
+The console is React 19 with TanStack Query, Router, Table and Form, `@dnd-kit`
+for the board, `zustand` for the state that crosses views, `lucide-react` for
+icons and `motion` for layout and drawer animation. One SSE subscription at the
+root invalidates the query cache, so panels refresh from what changed instead of
+each view owning a reload callback.
 
 ### Dev loop
 
@@ -645,12 +759,22 @@ inverse that is almost never run. Roll back by restoring the database.
 ### API surface
 
 `/mcp` for agents · `/webhooks/github` for GitHub · everything else under
-`/api`: `health` `dashboard` `events` `roles` `skills` `tools` `agents` `boards`
-`tasks` `memories` `meetings` `runs` `repos` `workspaces` `costs`
-`settings/prices`.
+`/api`: `health` `dashboard` `events` `roles` `skills` `tools` `tools/catalog`
+`agents` `boards` `tasks` `memories` `knowledge` `meetings` `runs` `repos`
+`workspaces` `costs` `settings/prices`.
+
+`GET /api/tools/catalog` serves `internal/toolcat` to the role editor, so tool
+permissions are checkboxes rather than a text field that accepts a tool name
+nothing registers.
+
+`POST /api/knowledge` is `multipart/form-data`: `files` (repeatable), `scope`,
+`scope_ref`, optional `title` and comma-separated `tags`. It answers `202` with
+the accepted documents in `pending` and a per-file `rejected` map — one bad file
+in a batch never discards the good ones.
 
 `GET /api/events?topic=…&token=…` is the SSE stream. Topics: `run:<id>`,
-`board:<id>`, `boards`, `runs`, `meetings`, `meeting:<id>`, `memory`, and `*`.
+`board:<id>`, `boards`, `runs`, `meetings`, `meeting:<id>`, `memory`,
+`knowledge`, `founder`, and `*`.
 
 ---
 

@@ -1,8 +1,8 @@
 ---
 slug: verify-acceptance
-version: 1
+version: 2
 applies_to: [qa]
-tools_required: [task_get, task_create, kanban_move, memory_write]
+tools_required: [task_get, task_create, kanban_move, repo_diff, knowledge_search, memory_write]
 priority: 10
 description: Check a task's acceptance criteria against the real branch and gate the done column
 ---
@@ -20,14 +20,21 @@ own verification for.
 ## Procedure
 
 1. `task_get` and read the acceptance criteria as a numbered list.
-2. For each criterion, decide how you will observe it before you observe it.
+2. `repo_diff` to see what actually changed. Verifying against the task
+   description alone misses the two things that matter most: a criterion the
+   change never touched, and a change nothing in the task asked for.
+3. For each criterion, decide how you will observe it before you observe it.
    Write that down.
-3. Run the project's tests. Then check each criterion by the method you chose.
-4. Record, per criterion: pass, fail, or could-not-verify — with what you saw.
-5. File each failure as its own task with reproduction steps and `role_slug`
+4. `knowledge_search` for any uploaded standard the criteria reference or should
+   have. A change meeting its criteria while violating an uploaded policy is a
+   fail, and the criteria are then also a defect.
+5. Run the project's tests. Then check each criterion by the method you chose.
+6. Record, per criterion: pass, fail, or could-not-verify — with what you saw.
+7. File each failure as its own task with reproduction steps and `role_slug`
    set to the role that should fix it.
-6. Move the task: `done` only if every criterion passed; otherwise back to
-   `in_progress`, or `blocked` when it cannot proceed at all.
+8. Move the task: `done` only if every criterion passed; otherwise back to
+   `in_progress`, or `blocked` when it cannot proceed at all. If the blocker is
+   a decision nobody has made, `escalate_founder` rather than leaving it to sit.
 
 ## Constraints
 

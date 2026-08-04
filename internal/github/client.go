@@ -85,6 +85,12 @@ func (c *Client) CreatePR(ctx context.Context, repo, title, body, head, base str
 	return &out, err
 }
 
+func (c *Client) GetPR(ctx context.Context, repo string, number int) (*PullRequest, error) {
+	var out PullRequest
+	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/pulls/%d", repo, number), nil, &out)
+	return &out, err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body, dst any) error {
 	if !c.Enabled() {
 		return fmt.Errorf("github token not configured")

@@ -15,7 +15,9 @@ import (
 	"iofi/internal/brain"
 	"iofi/internal/bus"
 	"iofi/internal/config"
+	"iofi/internal/docling"
 	"iofi/internal/github"
+	"iofi/internal/knowledge"
 	"iofi/internal/mcpsrv"
 	"iofi/internal/meeting"
 	"iofi/internal/runner"
@@ -83,6 +85,14 @@ func run() error {
 	run := runner.New(st, br, git, b, reg, mcpURL, cfg.MaxConcurrentRuns)
 	run.LiteLLMURL, run.LiteLLMKey = cfg.LiteLLMBaseURL, cfg.LiteLLMKey
 
+	doc := docling.New(cfg.DoclingURL, cfg.DoclingOCR)
+	kb := &knowledge.Service{Store: st, Brain: br, Docling: doc, Bus: b, DataDir: cfg.DataDir}
+	if doc.Enabled() {
+		slog.Info("docling enabled", "url", cfg.DoclingURL, "ocr", cfg.DoclingOCR)
+	} else {
+		slog.Warn("IOFI_DOCLING_URL unset: knowledge uploads accept text formats only")
+	}
+
 	mcp := mcpsrv.New(st, br, b, reg)
 	mcp.Git = git
 	mcp.Meetings = meeting.New(st, br, b)
@@ -104,7 +114,8 @@ func run() error {
 
 	srv := &api.Server{
 		Store: st, Brain: br, Bus: b, Runner: run,
-		Meeting: mcp.Meetings, MCP: mcp, GitHub: sync, WebFS: web.FS(),
+		Meeting: mcp.Meetings, MCP: mcp, GitHub: sync, Knowledge: kb, Docling: doc,
+		WebFS:     web.FS(),
 		AuthToken: cfg.AuthToken, RateLimitPerMin: cfg.RateLimitPerMin,
 		LiteLLMURL: cfg.LiteLLMBaseURL,
 	}

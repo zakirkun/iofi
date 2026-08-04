@@ -22,6 +22,11 @@ type Config struct {
 	EmbedModel     string
 	EmbedDim       int // must match the vector(N) column in migration 0001
 
+	// Docling converts uploaded PDFs, Office files and images to markdown. It
+	// is a separate service; unset means only already-textual uploads work.
+	DoclingURL string
+	DoclingOCR bool
+
 	GitHubToken         string
 	GitHubWebhookSecret string
 
@@ -48,6 +53,8 @@ func Load() (Config, error) {
 		BrainModel:         env("IOFI_BRAIN_MODEL", "gpt-4o-mini"),
 		EmbedModel:         env("IOFI_EMBED_MODEL", "text-embedding-3-small"),
 		EmbedDim:           envInt("IOFI_EMBED_DIM", 1536),
+		DoclingURL:         os.Getenv("IOFI_DOCLING_URL"),
+		DoclingOCR:         envBool("IOFI_DOCLING_OCR"),
 		GitHubToken:        os.Getenv("IOFI_GITHUB_TOKEN"),
 		PublicURL:          env("IOFI_PUBLIC_URL", "http://localhost:8080"),
 		AuthToken:          os.Getenv("IOFI_AUTH_TOKEN"),
@@ -110,4 +117,12 @@ func envInt(k string, def int) int {
 		return v
 	}
 	return def
+}
+
+func envBool(k string) bool {
+	switch strings.ToLower(os.Getenv(k)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }

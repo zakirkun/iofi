@@ -13,6 +13,16 @@ func (s *Store) ListMeetings(ctx context.Context, openOnly bool) ([]Meeting, err
 	return selectAll[Meeting](ctx, s, sql+` ORDER BY created_at DESC`)
 }
 
+// MeetingsForAgent lists only the rooms this agent was invited to. An agent
+// shown every meeting in the company will read the ones it has no standing in.
+func (s *Store) MeetingsForAgent(ctx context.Context, agentID string, openOnly bool) ([]Meeting, error) {
+	sql := `SELECT ` + meetingCols + ` FROM meetings WHERE $1 = ANY(participants)`
+	if openOnly {
+		sql += ` AND closed_at IS NULL`
+	}
+	return selectAll[Meeting](ctx, s, sql+` ORDER BY created_at DESC LIMIT 50`, agentID)
+}
+
 func (s *Store) GetMeeting(ctx context.Context, id string) (*Meeting, error) {
 	return selectOne[Meeting](ctx, s, `SELECT `+meetingCols+` FROM meetings WHERE id=$1`, id)
 }

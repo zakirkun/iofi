@@ -1,8 +1,8 @@
 ---
 slug: triage-ticket
-version: 1
+version: 2
 applies_to: [support-ticket, business-process, finance]
-tools_required: [memory_search, task_create, memory_write]
+tools_required: [memory_search, knowledge_search, task_search, task_create, memory_write]
 priority: 20
 description: Turn an incoming report into either an answer or a task, never into a guess
 ---
@@ -22,14 +22,19 @@ question from the Founder.
 
 1. Restate the report in one sentence. If you cannot, the report is incomplete —
    say exactly which fact is missing.
-2. `memory_search` for the symptom. A recurring report usually has a recorded
-   cause.
-3. Try to reproduce it. Record the result either way, including "could not
+2. `task_search` the symptom. A match against an open task makes this a second
+   occurrence rather than a new task; a match against a closed one makes it a
+   regression, which is worse and must be labelled as such.
+3. `memory_search` for the symptom and `knowledge_search` for the documented
+   behaviour. A recurring report usually has a recorded cause, and "this is
+   working as specified" is only sayable once you have read the specification.
+4. Try to reproduce it. Record the result either way, including "could not
    reproduce, here is what I tried".
-4. Classify severity by what the user cannot do, not by how the report sounds.
-5. If memory answers it, answer and stop. Otherwise `task_create` with the
-   reproduction steps, the severity, and `role_slug` set to the owning role.
-6. `memory_write` kind `fact` when the same report has now arrived twice.
+5. Classify severity by what the user cannot do, not by how the report sounds.
+6. If memory or an uploaded document answers it, answer and stop. Otherwise
+   `task_create` with the reproduction steps, the severity, and `role_slug` set
+   to the owning role — `role_list` first if you are unsure of the exact slug.
+7. `memory_write` kind `fact` when the same report has now arrived twice.
 
 ## Constraints
 

@@ -25,6 +25,7 @@ import (
 // so mcpsrv does not depend on the whole github package.
 type PRService interface {
 	OpenPR(ctx context.Context, taskID, title, body string) (url string, err error)
+	PRStatus(ctx context.Context, taskID string) (string, error)
 }
 
 type Service struct {
